@@ -14,9 +14,11 @@ import random
 webhook_url = None
 users = []
 streak_data = {}
-version = "0.5"
+version = "1.0"
 giphy_apikey = ""
 phrase_r = {}
+login_url = "https://www.duolingo.com/login"
+sadness_gif = "https://media.giphy.com/media/Ty9Sg8oHghPWg/giphy.gif"
 
 #Gets time and creates timestamp
 timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d')
@@ -30,18 +32,27 @@ def get_phrase():
         phrases = phrase['phrases']
         r = random.SystemRandom()
         return r.choice(phrases)
+
 #Function parses config data
 def get_config():
     global users
     global webhook_url
     global giphy_apikey
+    global giphy_rating
+    global username
+    global password
     with open('config.json') as config_r:
         config = json.load(config_r)
         webhook_url = config['webhook_url']
         users = config['users']
+        logging.info(users)
+        username = config['username']
+        password = config['password']
+
         if config['use_giphy'] is True:
             giphy_apikey = config['giphy_apikey']
             giphy_rating = config['giphy_rating']
+
         logging.info("Config set.")
 
 #Main API endpoints
@@ -76,19 +87,46 @@ def send_discord(r_msg, url = None):
     #Appends raw POST date to log file.
     logging.info("Post data: {}".format(r))
 
+#Login to get data from Duolingo
+def login():
+    global session
+    login_data = {"login": username, "password": password}
+    session = requests.Session()
+    jwt = None
+    headers = {}
+
+    if jwt is not None:
+        headers['Authorization'] = 'Bearer ' + jwt
+        logging.info("Header Set")
+
+    req = requests.Request('POST', login_url,json=login_data,headers=headers,cookies=session.cookies)
+    prepped = req.prepare()
+    request = session.send(prepped)
+    attempt = request.json()
+
+    if attempt.get('response') == 'OK':
+        logging.info(request.headers['jwt'])
+        logging.info("Logged In")
+
 #Updates streak data of users in config file.
 def update_data():
     global streak_data
+
     for user in users:
+        logging.info("Loaded User:{}".format(user))
         try:
-            with urllib.request.urlopen(api_endpoint + user) as data_r:
-                data_p = json.loads(data_r.read().decode())
+            with session as data_r:
+                data_p = json.loads(json.dumps(data_r.get(api_endpoint + user, cookies=session.cookies).json()))
+                logging.info("API url used {}".format(api_endpoint + user))
+                streak = get_streak(data_p)
+                streak_data[user] = streak
+                logging.info("Streak for user {} is {}".format(user, streak))
         except Exception as e:
             logging.exception("Failed to fetch or parse data for user {}. Skipping.".format(user))
             logging.exception("Exception was: {}".format(e))
-            continue
-        streak = get_streak(data_p)
-        streak_data[user] = streak
+        continue
+
+    logging.info("Updated Data")
 
 #Updates streak_data.json with pulled data from update_data function
 def update_data_file():
@@ -144,7 +182,7 @@ def check_data():
                 logging.critical("WTH just happened")
         #If user has not increased streak, posts the results to Discord
         elif streak_data[user] is 0 and previous[user] > 0:
-            send_discord("@everyone {} has lost their streak! Tease them mercilessly.".format(user))
+            send_discord("@everyone {} has lost their streak! Tease them mercilessly.".format(user), sadness_gif)
             logging.info("{} failed their streak. Loser.".format(user))
 #Returns steak data
 def get_streak(data_p):
@@ -162,6 +200,8 @@ def main():
         logging.critical("Failed to load configuration. Aborting.")
         logging.critical("Full error is: {}".format(e))
 
+    #Login into accoount 
+    login()
     #Updates streak data from Duolingo
     update_data()
     #Verifies that streak_data.json is present and runs check_data to run main routine to verify if users streaks have changed
